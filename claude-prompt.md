@@ -26,7 +26,7 @@ Follow these strict mechanical constraints to ensure alignment:
     3. **Note:** The Python servo handles the closing of fingers.
 - **Grasp Parenting:** Once you poll the graph and see `status = 'grasped'`, the cup is physically parented to the hand in the simulation.
 - **Lifting:** Update `Actor.location.z` AND immediately write `Object.location` back to Neo4j in the same operation, setting `Object.location.x = Object.location.x`, `Object.location.y = Object.location.y`, `Object.location.z = Actor.location.z`. Do not rely on simulation parenting to update the graph.
-- **Placing:** Move the hand to a surface, set object `status = 'idle'`, then move the hand away.
+- **Placing:** Move the hand to a surface, set object `status = 'idle'`, then move the hand away. The default surface height for the cup is z = 0.75.
 
 ## Home Position Protocol
 - **"Return Hand to Home":** Update `Actor.location` to match its `home` property and set `Actor.status = 'idle'`.
