@@ -1,29 +1,28 @@
 import os
-import time
 import asyncio
+import numpy as np
+from scipy.spatial.transform import Rotation as R, Slerp
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
 import foxglove
-from foxglove.channels import SceneUpdateChannel, LogChannel, FrameTransformChannel
+from foxglove.channels import SceneUpdateChannel
 from foxglove.messages import (
     SceneUpdate, SceneEntity, CubePrimitive, 
-    ModelPrimitive, Vector3, Color, Log, LogLevel, Pose, Quaternion,
-    Timestamp, FrameTransform
+    ModelPrimitive, Vector3, Color, Pose, Quaternion, Timestamp
 )
 
-# --- INITIALIZATION ---
-load_dotenv() 
+load_dotenv()
 
-# --- GLOBAL CONFIGURATION ---
-MODE = "LIVE"  
-ROBOT_SCALE_FACTOR = 1.5
-CUP_SCALE_FACTOR = 0.003
+# --- CONFIG ---
 ROBOT_MESH_BASE = "package://franka_description/meshes/robot_ee/franka_hand_white/visual"
 CUP_MESH_PATH = "file:///Users/michaelmoore/GitHub/neo4j-semantic-robot/meshes/red-coffee-cup/3d-model.obj"
+ROBOT_SCALE = 1.5
+FINGER_OPEN_OFFSET = 0.06 
 
-# --- CALIBRATED OFFSETS ---
-HAND_Z_OFFSET = 0.06 
-CUP_GRASP_CORRECTION = -0.06 
+# STRICT LINEAR KINEMATICS
+LINEAR_STEP_POS = 0.012  # Adjusted for slightly faster lift
+LINEAR_STEP_ROT = 0.12   
+GRASP_THRESHOLD = 0.02   # 2cm threshold for the initial "handshake"
 
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 NEO4J_AUTH = (os.getenv("NEO4J_USER", "neo4j"), os.getenv("NEO4J_PASSWORD"))
@@ -31,121 +30,121 @@ NEO4J_AUTH = (os.getenv("NEO4J_USER", "neo4j"), os.getenv("NEO4J_PASSWORD"))
 async def main():
     scene_channel = SceneUpdateChannel("/scene")
     server = foxglove.start_server(host="127.0.0.1", port=8765)
-    
-    driver = None
-    if MODE == "LIVE":
-        try:
-            driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
-            print("🚀 LIVE: Shift-Correction & Countertop Restored")
-        except Exception as e:
-            print(f"❌ Connection Failed: {e}")
-            return
+    driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
+    print("🚀 LINEAR STICKY ENGINE: Eliminating lift-teleport via state-locking.")
 
-    # Internal State
-    curr_h = {"x": 0.5, "y": -0.55, "z": 0.9}
-    curr_f_prog = 0.0
-    status = "idle" 
-    cup_db_pos = {"x": 1.42, "y": -0.55, "z": 0.75}
-    cup_radius = 0.05
-    # Countertop defaults
-    counter_pos = {"x": 1.0, "y": -0.5, "z": 0.725}
-    counter_dims = {"x": 2.0, "y": 1.0, "z": 0.05}
+    curr_h_pos = None  
+    curr_h_rot = None 
+    curr_f_prog = 0.0 
+
+    def get_xyz(p):
+        if hasattr(p, "x"): return [p.x, p.y, p.z]
+        return [p.get("x", 0), p.get("y", 0), p.get("z", 0)]
 
     try:
         while True:
             current_time = Timestamp.now()
+            entities = []
             
-            # --- 1. DATA ACQUISITION ---
-            if MODE == "LIVE":
-                try:
-                    with driver.session() as session:
-                        res = session.run("""
-                            MATCH (a:Actor {id: 'humanoid_hand'})
-                            MATCH (o:Object {id: 'red_cup_target'})
-                            OPTIONAL MATCH (s:Surface {id: 'countertop'})
-                            RETURN a.location.x AS hx, a.location.y AS hy, a.location.z AS hz,
-                                   o.location.x AS cx, o.location.y AS cy, o.location.z AS cz,
-                                   o.radius AS radius, o.status AS status,
-                                   s.location.x AS sx, s.location.y AS sy, s.location.z AS sz
-                        """)
-                        record = res.single()
-                        if record:
-                            status = record["status"]
-                            cup_db_pos = {"x": record["cx"], "y": record["cy"], "z": record["cz"]}
-                            cup_radius = record["radius"] if record["radius"] else 0.05
-                            
-                            if record["sx"] is not None:
-                                counter_pos = {"x": record["sx"], "y": record["sy"], "z": record["sz"]}
-                            
-                            # --- KINEMATIC LOCK ---
-                            stop_x = cup_db_pos["x"] - (cup_radius * 1.75)
-                            raw_hx = record["hx"]
-                            
-                            # FIX: Maintain the clamp even during 'grasped' if the hand is still 
-                            # trying to settle into the cup's collision zone.
-                            if status in ["idle", "picking", "grasped"]:
-                                final_hx = min(raw_hx, stop_x)
-                            else:
-                                final_hx = raw_hx
+            with driver.session() as session:
+                res = session.run("""
+                    MATCH (h:Hand {id: 'humanoid_hand'}), (c:Object {id: 'red_cup_target'})
+                    OPTIONAL MATCH (s:Surface {id: 'countertop'})
+                    MATCH (f:Finger)-[:HAS_PARENT]->(h)
+                    RETURN h, c, s, c.radius as radius, avg(f.finger_tip_reach) as reach
+                """)
+                record = res.single()
+                if not record: continue
+                
+                hand, cup, surface = record['h'], record['c'], record['s']
+                target_radius = record['radius'] or 0.05
+                reach = record['reach'] or 0.185
+                status = cup.get("status", "idle")
+                
+                # --- FETCH TARGETS ---
+                h_target_pos = np.array(get_xyz(hand["location"]))
+                h_target_rot = R.from_quat([hand.get("qx", 0), hand.get("qy", 0), hand.get("qz", 0), hand.get("qw", 1)])
+                
+                if curr_h_pos is None:
+                    curr_h_pos = h_target_pos
+                    curr_h_rot = h_target_rot
 
-                            target_h = {
-                                "x": final_hx, 
-                                "y": record["hy"], 
-                                "z": record["hz"] + HAND_Z_OFFSET
-                            }
-                except Exception: continue
+                # --- LINEAR POSITION ---
+                pos_diff = h_target_pos - curr_h_pos
+                dist_to_target = np.linalg.norm(pos_diff)
+                if dist_to_target > LINEAR_STEP_POS:
+                    curr_h_pos += (pos_diff / dist_to_target) * LINEAR_STEP_POS
+                else:
+                    curr_h_pos = h_target_pos
+                
+                # --- LINEAR ROTATION ---
+                total_rot_diff = (curr_h_rot.inv() * h_target_rot).as_rotvec()
+                angle_dist = np.linalg.norm(total_rot_diff)
+                if angle_dist > LINEAR_STEP_ROT:
+                    ratio = LINEAR_STEP_ROT / angle_dist
+                    slerp = Slerp([0, 1], R.from_quat([curr_h_rot.as_quat(), h_target_rot.as_quat()]))
+                    curr_h_rot = slerp([ratio])[0]
+                else:
+                    curr_h_rot = h_target_rot
 
-            # --- 2. HANDSHAKE ---
-            target_f_prog = 1.0 if status in ["picking", "grasped"] else 0.0
-            if MODE == "LIVE" and status == "picking" and curr_f_prog > 0.95:
-                try:
-                    with driver.session() as session:
-                        session.run("MATCH (o:Object {id: 'red_cup_target'}) SET o.status = 'grasped'")
-                except: pass
+                # --- STICKY GRASP LOGIC ---
+                # Key Fix: If DB says 'grasped', we STAY grasped. 
+                # We only use the distance threshold if we are currently 'idle' and trying to grab.
+                if status == "grasped":
+                    is_effectively_grasped = True
+                else:
+                    is_effectively_grasped = False
 
-            # --- 3. INTERPOLATION ---
-            curr_h["x"] += (target_h["x"] - curr_h["x"]) * 0.1
-            curr_h["y"] += (target_h["y"] - curr_h["y"]) * 0.1
-            curr_h["z"] += (target_h["z"] - curr_h["z"]) * 0.1
-            curr_f_prog += (target_f_prog - curr_f_prog) * 0.1
+                # Finger progress remains linear
+                f_target = 1.0 if is_effectively_grasped else 0.0
+                f_step = 0.08 
+                if abs(f_target - curr_f_prog) > f_step:
+                    curr_f_prog += f_step if f_target > curr_f_prog else -f_step
+                else:
+                    curr_f_prog = f_target
 
-            # --- 4. RENDER LOGIC ---
-            if status == "grasped":
-                # Use curr_h (which is now clamped by final_hx) to drive cup position
-                render_cup_x = curr_h["x"] + (cup_radius * 1.75)
-                render_cup_y = curr_h["y"]
-                render_cup_z = curr_h["z"] + CUP_GRASP_CORRECTION
-            else:
-                render_cup_x, render_cup_y, render_cup_z = cup_db_pos["x"], cup_db_pos["y"], cup_db_pos["z"]
+                # --- OFFSET LOGIC ---
+                if is_effectively_grasped:
+                    hand_forward = curr_h_rot.apply(np.array([0.0, 0.0, 1.0]))
+                    yaw_angle = np.arctan2(hand_forward[1], hand_forward[0])
+                    cup_world_rot = R.from_euler('z', yaw_angle)
+                    
+                    offset_vec = curr_h_rot.apply(np.array([0.0, 0.0, reach]))
+                    ref_pos = [curr_h_pos[0] + offset_vec[0], curr_h_pos[1] + offset_vec[1], curr_h_pos[2] + offset_vec[2]]
+                else:
+                    cup_world_rot = R.from_quat([cup.get("qx", 0), cup.get("qy", 0), cup.get("qz", 0), cup.get("qw", 1)])
+                    ref_pos = get_xyz(cup["location"])
 
-            # --- 5. RENDERING ---
-            r_scale = Vector3(x=ROBOT_SCALE_FACTOR, y=ROBOT_SCALE_FACTOR, z=ROBOT_SCALE_FACTOR)
-            c_scale = Vector3(x=CUP_SCALE_FACTOR, y=CUP_SCALE_FACTOR, z=CUP_SCALE_FACTOR)
-            f_offset = (0.06 * ROBOT_SCALE_FACTOR) - (curr_f_prog * (0.027 * ROBOT_SCALE_FACTOR))
+                # --- RENDER ---
+                h_q = curr_h_rot.as_quat()
+                c_q = cup_world_rot.as_quat()
+                current_spread = FINGER_OPEN_OFFSET + (curr_f_prog * (target_radius - FINGER_OPEN_OFFSET))
+                
+                hand_entities = [ModelPrimitive(pose=Pose(position=Vector3(x=curr_h_pos[0], y=curr_h_pos[1], z=curr_h_pos[2]), orientation=Quaternion(x=h_q[0], y=h_q[1], z=h_q[2], w=h_q[3])), scale=Vector3(x=ROBOT_SCALE, y=ROBOT_SCALE, z=ROBOT_SCALE), url=f"{ROBOT_MESH_BASE}/hand.dae")]
+                
+                fing_res = session.run("MATCH (f:Finger)-[:HAS_PARENT]->(h:Hand) RETURN f.side as side, f.local_offset_x as ox, f.local_offset_y as oy, f.local_offset_z as oz")
+                for f in fing_res:
+                    side_mult = 1.0 if f['side'] == 'left' else -1.0
+                    y_spread = f['oy'] + (current_spread * side_mult)
+                    f_local = np.array([f['ox'], y_spread, f['oz']])
+                    f_world = curr_h_rot.apply(f_local)
+                    f_rot = curr_h_rot if f['side'] == 'left' else curr_h_rot * R.from_euler('z', 180, degrees=True)
+                    fq = f_rot.as_quat()
+                    hand_entities.append(ModelPrimitive(pose=Pose(position=Vector3(x=curr_h_pos[0] + f_world[0], y=curr_h_pos[1] + f_world[1], z=curr_h_pos[2] + f_world[2]), orientation=Quaternion(x=fq[0], y=fq[1], z=fq[2], w=fq[3])), scale=Vector3(x=ROBOT_SCALE, y=ROBOT_SCALE, z=ROBOT_SCALE), url=f"{ROBOT_MESH_BASE}/finger.dae"))
+                
+                entities.append(SceneEntity(id="humanoid_hand", frame_id="world", timestamp=current_time, models=hand_entities))
+                entities.append(SceneEntity(id="coffee_cup", frame_id="world", timestamp=current_time, 
+                    models=[ModelPrimitive(pose=Pose(position=Vector3(x=ref_pos[0], y=ref_pos[1], z=ref_pos[2]-0.06), orientation=Quaternion(x=c_q[0], y=c_q[1], z=c_q[2], w=c_q[3])), scale=Vector3(x=0.003, y=0.003, z=0.003), url=CUP_MESH_PATH)],
+                    cubes=[CubePrimitive(size=Vector3(x=0.15, y=0.1, z=0.12), pose=Pose(position=Vector3(x=ref_pos[0], y=ref_pos[1], z=ref_pos[2]), orientation=Quaternion(x=c_q[0], y=c_q[1], z=c_q[2], w=c_q[3])), color=Color(r=0, g=1, b=0, a=0.2))]))
 
-            scene_channel.log(SceneUpdate(entities=[
-                # Countertop Entity
-                SceneEntity(id="countertop", frame_id="world", timestamp=current_time,
-                    cubes=[CubePrimitive(
-                        size=Vector3(x=counter_dims["x"], y=counter_dims["y"], z=counter_dims["z"]), 
-                        color=Color(r=0.4, g=0.4, b=0.4, a=0.5),
-                        pose=Pose(position=Vector3(x=counter_pos["x"], y=counter_pos["y"], z=counter_pos["z"]), orientation=Quaternion(x=0,y=0,z=0,w=1)))]),
-                # Cup Entity
-                SceneEntity(id="coffee_cup", frame_id="world", timestamp=current_time,
-                    models=[ModelPrimitive(pose=Pose(position=Vector3(x=render_cup_x, y=render_cup_y, z=render_cup_z), 
-                    orientation=Quaternion(x=0, y=0, z=0, w=1)), scale=c_scale, url=CUP_MESH_PATH, color=Color(r=1, g=1, b=1, a=1))]),
-                # Hand Entity
-                SceneEntity(id="humanoid_hand", frame_id="world", timestamp=current_time,
-                    models=[
-                        ModelPrimitive(pose=Pose(position=Vector3(x=curr_h["x"] - 0.1, y=curr_h["y"], z=curr_h["z"]), orientation=Quaternion(x=0, y=0.707, z=0, w=0.707)), scale=r_scale, url=f"{ROBOT_MESH_BASE}/hand.dae"),
-                        ModelPrimitive(pose=Pose(position=Vector3(x=curr_h["x"], y=curr_h["y"] + f_offset, z=curr_h["z"]), orientation=Quaternion(x=0, y=0.707, z=0, w=0.707)), scale=r_scale, url=f"{ROBOT_MESH_BASE}/finger.dae"),
-                        ModelPrimitive(pose=Pose(position=Vector3(x=curr_h["x"], y=curr_h["y"] - f_offset, z=curr_h["z"]), orientation=Quaternion(x=0.707, y=0, z=0.707, w=0)), scale=r_scale, url=f"{ROBOT_MESH_BASE}/finger.dae")
-                    ])
-            ]))
-            await asyncio.sleep(0.03) 
-            
+                if surface:
+                    s_loc = get_xyz(surface["location"])
+                    entities.append(SceneEntity(id="countertop", frame_id="world", timestamp=current_time, cubes=[CubePrimitive(size=Vector3(x=2.0, y=1.0, z=0.05), pose=Pose(position=Vector3(x=s_loc[0], y=s_loc[1], z=s_loc[2]), orientation=Quaternion(x=0, y=0, z=0, w=1)), color=Color(r=0.4, g=0.4, b=0.4, a=0.5))]))
+
+            scene_channel.log(SceneUpdate(entities=entities))
+            await asyncio.sleep(0.03)
     finally:
-        if driver: driver.close()
+        driver.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
