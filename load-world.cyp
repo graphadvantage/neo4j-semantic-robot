@@ -178,3 +178,43 @@ MATCH (f:Finger)-[:HAS_PARENT]->(h:Hand {id: 'humanoid_hand'})
 SET f.finger_tip_reach = 0.185,
     f.status = 'open'
 RETURN f.id, f.finger_tip_reach;
+
+
+MATCH (f:Finger)-[:HAS_PARENT]->(h:Hand {id: 'humanoid_hand'})
+SET f.local_offset_x = 0.0,
+    f.local_offset_y = 0.0,
+    f.local_offset_z = 0.1;
+
+//correct offsets for closed
+
+MATCH (f:Finger {name: "Right Finger"}) 
+set f.local_offset_y = 0.06,
+f.reference_fully_closed = 0.06,
+f.reference_fully_open = 0.0;
+
+MATCH (f:Finger {name: "Left Finger"}) 
+set f.local_offset_y = -0.06,
+f.reference_fully_closed = -0.06,
+f.reference_fully_open = 0.0;
+
+MATCH (f:Finger {name: "Right Finger"}) 
+set f.local_offset_y = -0.00,
+f.reference_fully_closed = 0.06,
+f.reference_fully_open = -0.04;
+
+MATCH (f:Finger {name: "Left Finger"}) 
+set f.local_offset_y = 0.00,
+f.reference_fully_closed = -0.06,
+f.reference_fully_open = 0.04;
+
+
+// zeroed values
+MATCH (f:Finger {name: "Left Finger"}) 
+SET f.reference_fully_open = 0.1,
+f.local_offset_y = 0.06,
+f.reference_fully_closed = 0.0;
+
+MATCH (f:Finger {name: "Right Finger"}) 
+SET f.reference_fully_open = -.1,
+f.local_offset_y = -0.06,
+f.reference_fully_closed = 0.0;
