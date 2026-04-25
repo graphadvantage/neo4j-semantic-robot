@@ -17,7 +17,7 @@ Traditional robotics approaches rely on geometry: pose estimation, [SLAM](https:
 - What physical sequence achieves "making coffee" given the current world state?
 - What could go wrong, and what preconditions must be true first?
 
-**The graph is the bridge between the human world and the robot world.** It encodes object identity, affordances, spatial relationships, and live physical state in a single queryable structure. The LLM agent reads this graph to answer semantic questions ("is the cup full?") and writes to it to drive physical actions ("move the hand here, set status to grasped").
+**The graph is the shared ontology between the human world and the robot world.** It encodes object identity, affordances, spatial relationships, and live physical state in a single queryable structure. The LLM agent reads this graph to answer semantic questions ("is the cup full?") and writes to it to drive physical actions ("move the hand here, set status to grasped").
 
 This separates concerns cleanly:
 - The **graph** holds world truth — positions, states, relationships, operation schemas
