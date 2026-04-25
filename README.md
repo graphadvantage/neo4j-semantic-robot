@@ -251,6 +251,7 @@ Reset everything:
 ## Resources
 
 - [Neo4j GenAI Ecosystem](https://neo4j.com/labs/genai-ecosystem/) — MCP servers, integrations, and tools for building AI applications on Neo4j
+- [Franka Physical AI Applications](https://franka.de/applications#physical-ai-applications) — Franka Emika robotics platform for physical AI research
 
 ---
 
