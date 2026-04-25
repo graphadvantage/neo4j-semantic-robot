@@ -1,0 +1,86 @@
+# 
+# Wavefront material file
+# Converted by the DEEP Exploration  Deep Exploration 6.3 x64 6.3.3.8069
+# Right Hemisphere, LTD
+# http://www.righthemisphere.com/
+# 
+
+newmtl Steel
+Ka 0.72549 0.72549 0.72549
+Kd 0.721569 0.721569 0.721569
+Ks 1 1 1
+illum 2
+Ns 1448.15
+map_Kd stainless.jpg
+map_bump 
+bump 
+map_opacity 
+map_d 
+refl 
+map_kS 
+map_kA 
+map_Ns 
+
+newmtl Plastic
+Ka 1 1 1
+Kd 1 1 1
+Ks 1 1 1
+illum 2
+Ns 2048
+map_Kd 5rfdcvv.jpg
+map_bump 
+bump 
+map_opacity 
+map_d 
+refl 
+map_kS 
+map_kA 
+map_Ns 
+
+newmtl Chrome
+Ka 0.72549 0.72549 0.72549
+Kd 0.721569 0.721569 0.721569
+Ks 1 1 1
+illum 2
+Ns 2048
+map_Kd stainless.jpg
+map_bump 
+bump 
+map_opacity 
+map_d 
+refl 
+map_kS 
+map_kA 
+map_Ns 
+
+newmtl Wood
+Ka 1 1 1
+Kd 1 1 1
+Ks 1 1 1
+illum 2
+Ns 362.039
+map_Kd 87uuhbgh.jpg
+map_bump 
+bump 
+map_opacity 
+map_d 
+refl 
+map_kS 
+map_kA 
+map_Ns 
+
+newmtl Plastic_Box
+Ka 1 1 1
+Kd 1 1 1
+Ks 1 1 1
+illum 2
+Ns 724.077
+map_Kd 15aas4ew.jpg
+map_bump 
+bump 
+map_opacity 
+map_d 
+refl 
+map_kS 
+map_kA 
+map_Ns 
