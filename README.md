@@ -117,8 +117,6 @@ The system prompt for the Claude Desktop project. Defines:
 ### `load-digital-twin.cyp`
 An APOC-generated Cypher snapshot of the full DB state. Restores a known-good world configuration including all nodes, properties, and relationships.
 
-<img src="assets/digital-twin.png" width="830" alt="Neo4j Digital Twin" />
-
 ---
 
 ## Getting Started
@@ -158,6 +156,13 @@ PATH_TO_REPO="file:///path/to/your/GitHub/"
 ### Load the Digital Twin
 
 In Neo4j Browser, run `load-digital-twin.cyp` to initialize the world state. Each statement must run sequentially (the APOC import constraint must be created before nodes, dropped after cleanup).
+
+```
+MATCH path = (n)--() RETURN path
+```
+
+<img src="assets/digital-twin.png" width="830" alt="Neo4j Digital Twin" />
+
 
 ### Configure Claude Desktop
 
