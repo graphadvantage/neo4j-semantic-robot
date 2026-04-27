@@ -323,16 +323,15 @@ Franka hand and finger meshes (`hand.dae`, `finger.dae`) are loaded via `package
 
 **Why Neo4j?** Property graphs naturally model object identity, spatial relationships, and affordances. Cypher is expressive enough for an LLM to write correctly and readable enough to debug in Neo4j Browser.
 
-**Why not write finger state from the agent?** The renderer owns all animation state derived from physics. Fingers animate from a single `curr_f_prog` float computed from cup proximity and grasp status. Writing finger positions from the agent would create race conditions and fight the renderer.
-
-**Why `apoc.periodic.iterate` instead of `CALL {} IN TRANSACTIONS`?** The `neo4j-mcp` tool wraps every query in an explicit transaction, which conflicts with `CALL {} IN TRANSACTIONS` (an auto-commit-only clause). `apoc.periodic.iterate` with `batchSize:1` achieves the same result — each step executes and commits in its own transaction — while remaining compatible with the MCP tool's transaction model.
-
-**Why separate write rows and sleep rows?** Each write row has no `sleep` key, so `coalesce(step.sleep, 0)` = 0 and it commits instantly — the renderer sees the new state on the very next poll. The following sleep row carries only `{sleep: N}` and gives the renderer its full animation window. Embedding sleep inside the write object delays the commit until after the sleep, so the renderer never gets to animate the transition and steps appear to skip.
-
 **Why a PLAN block?** The PLAN block separates reasoning from execution. Claude emits a human-readable, parsable step list before touching the graph — making its intent legible and reviewable before any state changes occur. Execution is then purely mechanical: wrap the PLAN block in the query template and run it.
 
-**Why separate queries for fingers vs. scene objects?** Joining `OPTIONAL MATCH (extra:Object)` with `OPTIONAL MATCH (f:Finger)` in a single query produces a Cartesian product, multiplying `env_objects` by the number of fingers. Keep them as separate queries.
+**Why `apoc.periodic.iterate` instead of `CALL {} IN TRANSACTIONS`?** The `neo4j-mcp` tool wraps every query in an explicit transaction, which conflicts with `CALL {} IN TRANSACTIONS` (an auto-commit-only clause). `apoc.periodic.iterate` with `batchSize:1` achieves the same result — each step executes and commits in its own transaction — while remaining compatible with the MCP tool's transaction model. 
 
+**Why separate write rows and sleep rows?** Each write row has no `sleep` key, so `coalesce(step.sleep, 0)` = 0 and it commits instantly — the renderer sees the new state on the very next poll. The following sleep row carries only `{sleep: N}` and gives the renderer its full animation window.
+
+**Why not write finger state from the agent?** The renderer owns all animation state derived from physics. Fingers animate from a single `curr_f_prog` float computed from cup proximity and grasp status. Writing finger positions from the agent would create race conditions and fight the renderer.
+
+**Why separate queries for fingers vs. scene objects?** Joining `OPTIONAL MATCH (extra:Object)` with `OPTIONAL MATCH (f:Finger)` in a single query produces a Cartesian product, multiplying `env_objects` by the number of fingers. 
 ---
 
 ## Example Semantic Reasoned Execution Plan
