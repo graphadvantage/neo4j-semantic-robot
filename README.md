@@ -336,6 +336,6 @@ Franka hand and finger meshes (`hand.dae`, `finger.dae`) are loaded via `package
 
 ---
 
-## Example Semantic Reasoned Execution Plan
+## Example Execution Plan
 
 <img src="assets/session.png" width="830" alt="Claude Session" />
