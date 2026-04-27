@@ -86,7 +86,7 @@ Object nodes are self-describing. The agent infers available operations from nod
 | Property pattern | Meaning |
 |-----------------|---------|
 | `*_home` | Authoritative 3D approach position for that operation |
-| `*_time_seconds` | Required dwell time after arrival |
+| `*_time_millis` | Required dwell time after arrival |
 | `last_*` | Timestamp to write on operation completion |
 | `status` present | Requires full pick/grasp/release lifecycle |
 | `status` absent | Time-gated only — arrival + dwell is the completion signal |
@@ -125,7 +125,7 @@ An APOC-generated Cypher snapshot of the full DB state. Restores a known-good wo
 - **[Neo4j](https://neo4j.com/download/)** — local or Aura cloud instance
 - **[neo4j-mcp](https://github.com/neo4j-contrib/mcp-neo4j)** — install the released binary locally
 - **[Foxglove 2.51.0](https://foxglove.dev)** — 3D visualization desktop app *(tested with 2.51.0 / foxglove-sdk 0.22 — this version requires `Capability.Time`, `FrameTransform` every frame, and HTTP-served meshes; earlier versions have different requirements)*
-- **[franka_description](https://github.com/frankaemika/franka_description)** — clone anywhere on your machine; Foxglove resolves `package://` URIs from it
+- **[franka_description](https://github.com/frankaemika/franka_description)** — clone it to your machine; Foxglove resolves `package://` URIs from it
 - **Python 3.10+**
 - **Claude Desktop** with MCP support
 
