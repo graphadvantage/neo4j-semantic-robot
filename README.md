@@ -332,6 +332,8 @@ Franka hand and finger meshes (`hand.dae`, `finger.dae`) are loaded via `package
 **Why not write finger state from the agent?** The renderer owns all animation state derived from physics. Fingers animate from a single `curr_f_prog` float computed from cup proximity and grasp status. Writing finger positions from the agent would create race conditions and fight the renderer.
 
 **Why separate queries for fingers vs. scene objects?** Joining `OPTIONAL MATCH (extra:Object)` with `OPTIONAL MATCH (f:Finger)` in a single query produces a Cartesian product, multiplying `env_objects` by the number of fingers. 
+
+
 ---
 
 ## Example Semantic Reasoned Execution Plan
