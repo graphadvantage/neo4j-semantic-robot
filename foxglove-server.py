@@ -1,28 +1,65 @@
 import os
 import asyncio
+import threading
+import urllib.parse
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import numpy as np
 from scipy.spatial.transform import Rotation as R, Slerp
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
 import foxglove
-from foxglove.channels import SceneUpdateChannel
+from foxglove.websocket import Capability
+from foxglove.channels import SceneUpdateChannel, FrameTransformChannel
 from foxglove.messages import (
-    SceneUpdate, SceneEntity, CubePrimitive, 
-    ModelPrimitive, Vector3, Color, Pose, Quaternion, Timestamp
+    SceneUpdate, SceneEntity, CubePrimitive,
+    ModelPrimitive, Vector3, Color, Pose, Quaternion, Timestamp,
+    FrameTransform
 )
 
 load_dotenv()
 
 # --- CONFIG ---
-ROBOT_MESH_BASE = "package://franka_description/meshes/robot_ee/franka_hand_white/visual"
 PATH_TO_REPO = os.getenv("PATH_TO_REPO", "file:///Users/michaelmoore/GitHub/")
+REPO_ROOT = PATH_TO_REPO.replace("file://", "").rstrip("/")
+MESH_HTTP_PORT = 8766
 DEFAULT_CUP_MESH     = PATH_TO_REPO + "neo4j-semantic-robot/meshes/red-coffee-cup/3d-model.obj"
 DEFAULT_COUNTER_MESH = PATH_TO_REPO + "neo4j-semantic-robot/meshes/kitchen-counter/kitchen-counter.obj"
+ROBOT_MESH_BASE = f"http://127.0.0.1:{MESH_HTTP_PORT}/franka_description/meshes/robot_ee/franka_hand_white/visual"
+
+class _MeshHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        path = urllib.parse.unquote(self.path.lstrip("/"))
+        full = os.path.join(REPO_ROOT, path)
+        try:
+            with open(full, "rb") as f:
+                data = f.read()
+            self.send_response(200)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception:
+            self.send_response(404)
+            self.end_headers()
+    def log_message(self, *args): pass
+
+threading.Thread(
+    target=lambda: HTTPServer(("127.0.0.1", MESH_HTTP_PORT), _MeshHandler).serve_forever(),
+    daemon=True
+).start()
 
 def resolve_mesh(path, default=""):
-    if not path: return default
-    if path.startswith(("file://", "package://")): return path
-    return PATH_TO_REPO + path
+    if not path:
+        path = default
+    if not path:
+        return ""
+    if not path.startswith(("file://", "package://")):
+        path = PATH_TO_REPO + path
+    if path.startswith("file://"):
+        rel = os.path.relpath(path[7:], REPO_ROOT)
+        return f"http://127.0.0.1:{MESH_HTTP_PORT}/{rel}"
+    elif path.startswith("package://"):
+        return f"http://127.0.0.1:{MESH_HTTP_PORT}/{path[10:]}"
+    return path
 
 ROBOT_SCALE = 1.5
 HAND_BASE_CALIB = R.from_quat([0.0, 0.707, 0.0, 0.707])
@@ -38,7 +75,8 @@ NEO4J_AUTH = (os.getenv("NEO4J_USER", "neo4j"), os.getenv("NEO4J_PASSWORD"))
 
 async def main():
     scene_channel = SceneUpdateChannel("/scene")
-    server = foxglove.start_server(host="127.0.0.1", port=8765)
+    tf_channel = FrameTransformChannel("/tf")
+    server = foxglove.start_server(host="127.0.0.1", port=8765, capabilities=[Capability.Time])
     driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
     print("🚀 STABLE ENGINE: Commit Ready")
 
@@ -115,7 +153,7 @@ async def main():
                         f_target = 1.0 if np.linalg.norm(curr_h_pos - cup_pos) < WITHDRAWAL_THRESHOLD else 0.0
                     else:
                         f_target = 0.0
-                f_step = 0.08
+                f_step = 0.2
                 curr_f_prog += f_step if f_target > curr_f_prog + f_step else (-f_step if f_target < curr_f_prog - f_step else f_target - curr_f_prog)
 
                 # --- CUP RENDERING (MESH + BOUNDING BOX) ---
@@ -178,6 +216,8 @@ async def main():
                 
                 entities.append(SceneEntity(id="humanoid_hand", frame_id="world", timestamp=current_time, models=hand_m))
 
+              server.broadcast_time(int(current_time.sec * 1e9 + current_time.nsec))
+              tf_channel.log(FrameTransform(parent_frame_id="", child_frame_id="world", timestamp=current_time))
               scene_channel.log(SceneUpdate(entities=entities))
             except Exception as e:
                 print(f"⚠️ Frame error: {e}")

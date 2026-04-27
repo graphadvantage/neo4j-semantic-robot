@@ -49,11 +49,10 @@ This pattern is likely to generalize far beyond this kitchen demo. Any humanoid 
 **Data flow:**
 1. Claude receives a natural language command (*"brew me a coffee"*)
 2. Claude queries Neo4j via `neo4j-mcp` to read current world state
-3. Claude reasons from graph properties, checks preconditions, plans a multi-phase action sequence
-4. Claude writes Cypher transactions to update `Hand.location`, `Object.status`, etc.
-5. `foxglove-server.py` reads the graph at ~67fps, interpolates hand movement, writes `h.state`
-6. Claude polls `h.state` to detect arrival before issuing the next command
-7. Foxglove renders the 3D scene live from the streamed `SceneUpdate` messages
+3. Claude reasons from graph properties, checks preconditions, and emits a structured **PLAN block** — an ordered list of write/sleep step pairs
+4. Claude wraps the PLAN block in a single `apoc.periodic.iterate` query (`batchSize:1`) and executes it — each write step commits instantly, each sleep step holds the window open for the renderer
+5. `foxglove-server.py` reads the graph at ~67fps, sees each committed write in real time, and interpolates hand movement and finger animation
+6. Foxglove renders the 3D scene live from the streamed `SceneUpdate` messages
 
 ---
 
@@ -125,7 +124,7 @@ An APOC-generated Cypher snapshot of the full DB state. Restores a known-good wo
 
 - **[Neo4j](https://neo4j.com/download/)** — local or Aura cloud instance
 - **[neo4j-mcp](https://github.com/neo4j-contrib/mcp-neo4j)** — install the released binary locally
-- **[Foxglove](https://foxglove.dev)** — 3D visualization desktop app
+- **[Foxglove 2.51.0](https://foxglove.dev)** — 3D visualization desktop app *(tested with 2.51.0 / foxglove-sdk 0.22 — this version requires `Capability.Time`, `FrameTransform` every frame, and HTTP-served meshes; earlier versions have different requirements)*
 - **[franka_description](https://github.com/frankaemika/franka_description)** — clone anywhere on your machine; Foxglove resolves `package://` URIs from it
 - **Python 3.10+**
 - **Claude Desktop** with MCP support
@@ -133,7 +132,7 @@ An APOC-generated Cypher snapshot of the full DB state. Restores a known-good wo
 ### Install Python Dependencies
 
 ```bash
-pip install foxglove-sdk neo4j python-dotenv scipy numpy
+pip install foxglove-sdk==0.22.0 neo4j python-dotenv scipy numpy
 ```
 
 ### Environment Variables
@@ -222,7 +221,7 @@ Open Foxglove → **New Connection** → **WebSocket** → `ws://localhost:8765`
 
 Start a session with:
 
-> *"Let's converse, I'm in PST — read your project instructions carefully and get the state from the DB."*
+> *"It is 09:37 PM PST. Read your project instruction prompt thoroughly and carefully. Get the state from the database. Let's start conversing in silent mode."*
 
 Then try natural language queries and robot commands:
 
@@ -231,6 +230,7 @@ Then try natural language queries and robot commands:
 "how old is my coffee?"
 "what's in the room?"
 "brew me a new cup"
+"there's a fly in my coffee, dump it out"
 ```
 
 Explicit robot control:
@@ -325,8 +325,16 @@ Franka hand and finger meshes (`hand.dae`, `finger.dae`) are loaded via `package
 
 **Why not write finger state from the agent?** The renderer owns all animation state derived from physics. Fingers animate from a single `curr_f_prog` float computed from cup proximity and grasp status. Writing finger positions from the agent would create race conditions and fight the renderer.
 
-**Why poll `h.state` instead of sleeping?** The agent cannot know how far the hand has to travel. Polling against `h.state = 'arrived'` makes the protocol distance-independent and correct for any target.
+**Why `apoc.periodic.iterate` instead of `CALL {} IN TRANSACTIONS`?** The `neo4j-mcp` tool wraps every query in an explicit transaction, which conflicts with `CALL {} IN TRANSACTIONS` (an auto-commit-only clause). `apoc.periodic.iterate` with `batchSize:1` achieves the same result — each step executes and commits in its own transaction — while remaining compatible with the MCP tool's transaction model.
+
+**Why separate write rows and sleep rows?** Each write row has no `sleep` key, so `coalesce(step.sleep, 0)` = 0 and it commits instantly — the renderer sees the new state on the very next poll. The following sleep row carries only `{sleep: N}` and gives the renderer its full animation window. Embedding sleep inside the write object delays the commit until after the sleep, so the renderer never gets to animate the transition and steps appear to skip.
+
+**Why a PLAN block?** The PLAN block separates reasoning from execution. Claude emits a human-readable, parsable step list before touching the graph — making its intent legible and reviewable before any state changes occur. Execution is then purely mechanical: wrap the PLAN block in the query template and run it.
 
 **Why separate queries for fingers vs. scene objects?** Joining `OPTIONAL MATCH (extra:Object)` with `OPTIONAL MATCH (f:Finger)` in a single query produces a Cartesian product, multiplying `env_objects` by the number of fingers. Keep them as separate queries.
+
+---
+
+## Example Semantic Reasoned Execution Plan
 
 <img src="assets/session.png" width="830" alt="Claude Session" />
