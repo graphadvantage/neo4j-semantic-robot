@@ -153,7 +153,7 @@ async def main():
                         f_target = 1.0 if np.linalg.norm(curr_h_pos - cup_pos) < WITHDRAWAL_THRESHOLD else 0.0
                     else:
                         f_target = 0.0
-                f_step = 0.08
+                f_step = 0.2
                 curr_f_prog += f_step if f_target > curr_f_prog + f_step else (-f_step if f_target < curr_f_prog - f_step else f_target - curr_f_prog)
 
                 # --- CUP RENDERING (MESH + BOUNDING BOX) ---

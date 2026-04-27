@@ -106,46 +106,125 @@ All commands are relative to the **Foxglove world default scene camera**.
 
 ---
 
-## 3. THE 4-PHASE FLIGHT PLAN
+## 3. EXECUTION PROTOCOL
 
-Before each phase: query hand state and verify it is `'arrived'` before issuing the next command.
-The server sets this automatically — it will be `'moving'` while the hand is interpolating and `'arrived'` when it reaches the target within 2cm.
-Do not proceed until you observe `'arrived'`.
+> Read state → reason completely → emit PLAN block → execute by wrapping the PLAN block.
 
-> ▎ Never write `h.state` directly — the server owns this property and overwrites it every frame. Rotation-only writes (no location change) are applied instantly; `h.state` remains `'arrived'` and you may proceed immediately.
+### Step 1 — Emit the PLAN block
 
-```cypher
-MATCH (h:Hand {id: 'humanoid_hand'}) RETURN h.state
+Before touching the graph, output the complete step list as a fenced PLAN block. This is the parsable artifact — one object per step with all write keys and a `sleep` value embedded. Works for atomic (single step) or sequenced (N steps).
+
+**Format** — alternating write row / sleep row pairs:
+
+```
+PLAN
+// 0: label
+{key: value, ...},
+{sleep: 1200},
+
+// 1: label
+{key: value, ...},
+{sleep: 1200}
+END PLAN
 ```
 
-**Do not batch write transactions.**
+Write rows have no `sleep` key — they commit instantly. Sleep rows have only `{sleep: N}` — no writes, just the render window.
+
+**Atomic example** — rotate only:
+```
+PLAN
+// 0: rotate to side-grasp
+{hqx:0, hqy:0.707, hqz:0, hqw:0.707},
+{sleep: 1200}
+END PLAN
+```
+
+**Sequenced example** — pick up cup:
+```
+PLAN
+// 0: rotate to side-grasp
+{hqx:0, hqy:0.707, hqz:0, hqw:0.707},
+{sleep: 1200},
+
+// 1: stage to cup
+{hx:1.07, hy:-0.5, hz:0.911, cstatus:'picking'},
+{sleep: 1200},
+
+// 2: strike
+{hx:1.235, hy:-0.5, hz:0.911},
+{sleep: 1200},
+
+// 3: lock
+{cstatus:'grasped'},
+{sleep: 1200}
+END PLAN
+```
+
+Rules:
+- Always emit the PLAN block before executing — never skip to execution
+- Every logical step is a write row + sleep row pair
+- For timed dwell steps, use a longer sleep on the sleep row: `{sleep: 4200}` (1200 + 3000ms dwell)
+- No coordinates in the narration — the PLAN block is where numbers live
+
+> ▎ **Never embed `sleep` in a write row.** The write row must have no `sleep` key so it commits instantly and the renderer sees the new state immediately. The sleep row that follows is the render window — the time the renderer has to animate the transition. If you merge them into one object, the transaction does not commit until after the sleep completes, the renderer never sees the intermediate state, and steps appear to skip.
+
+Supported write keys: `hx/hy/hz`, `hqx/hqy/hqz/hqw`, `cx/cy/cz`, `cqx/cqy/cqz/cqw`, `cstatus`, `cup_level`, `brew`
 
 ---
 
-### PHASE 1 — STAGING (Approach)
-- **Goal:** Glide to safe standoff distance
-- **Target:** `[Object.x − 0.35, Object.y, Object.z]`
-- **Orientation:** `qy: 0.707, qw: 0.707` (side-grasp baseline)
-- **State:** SET `Object.status = 'picking'`
+### Step 2 — Execute by wrapping the PLAN block
 
-### PHASE 2 — STRIKE (Precision Landing)
-- **Goal:** Linear glide into the strike zone
-- **Target:** `[Object.x − 0.185, Object.y, Object.z]`
-- **State:** Maintain `Object.status = 'picking'`
+Take the PLAN block content and drop it into the source query of the wrapper below. The wrapper uses `apoc.periodic.iterate` with `batchSize:1` — each step executes and commits in its own transaction so the render server sees each write immediately.
 
-### PHASE 3 — LOCK (Grasp)
-- **Goal:** Rigidly fuse object to hand frame
-- **State:** SET `Object.status = 'grasped'`
-- The renderer derives cup position and orientation from the hand automatically. You only need to set status.
-- For transport: update `Hand.location` only. Optionally update `Object.location` for semantic graph accuracy using `Hand.location + Reach` along the grasp axis.
+**Wrapper (copy verbatim, adapt node MATCHes and FOREACH blocks for your action):**
 
-### PHASE 4 — RELEASE (Place)
-- **Goal:** Stand object upright at target location and back away in side-grasp for at least 0.5m.
-- **State:** SET `Object.status = 'idle'`
-- Set: `Object.location = [NewX, NewY, NewZ]`
-- Reset orientation: `Object.qx: 0, Object.qy: 0, Object.qz: 0, Object.qw: 1.0`
+```cypher
+CALL apoc.periodic.iterate(
+  'UNWIND [
+    // << PLAN BLOCK CONTENT >>
+  ] AS step RETURN step',
+  'MATCH (h:Hand {id: "humanoid_hand"})
+   OPTIONAL MATCH (c:Object {id: "red_cup_target"})
+   FOREACH (_ IN CASE WHEN step.hx        IS NOT NULL THEN [1] ELSE [] END |
+     SET h.location = point({x: step.hx, y: step.hy, z: step.hz, crs: "cartesian-3d"}))
+   FOREACH (_ IN CASE WHEN step.hqx       IS NOT NULL THEN [1] ELSE [] END |
+     SET h.qx = step.hqx, h.qy = step.hqy, h.qz = step.hqz, h.qw = step.hqw)
+   FOREACH (_ IN CASE WHEN step.cx        IS NOT NULL THEN [1] ELSE [] END |
+     SET c.location = point({x: step.cx, y: step.cy, z: step.cz, crs: "cartesian-3d"}))
+   FOREACH (_ IN CASE WHEN step.cqx       IS NOT NULL THEN [1] ELSE [] END |
+     SET c.qx = step.cqx, c.qy = step.cqy, c.qz = step.cqz, c.qw = step.cqw)
+   FOREACH (_ IN CASE WHEN step.cstatus   IS NOT NULL THEN [1] ELSE [] END |
+     SET c.status = step.cstatus)
+   FOREACH (_ IN CASE WHEN step.cup_level IS NOT NULL THEN [1] ELSE [] END |
+     SET c.coffee_cup_level = step.cup_level)
+   FOREACH (_ IN CASE WHEN step.brew      IS NOT NULL THEN [1] ELSE [] END |
+     SET c.last_fresh_brew = datetime())
+   WITH step CALL apoc.util.sleep(coalesce(step.sleep, 0))',
+  {batchSize: 1, iterateList: true}
+)
+YIELD batches, total RETURN batches, total
+```
 
-> ▎ Renderer status contract: Only `'grasped'` and `'idle'` affect rendering behavior. `'picking'` is a valid semantic marker but the renderer treats it the same as `'idle'`.
+Wrapper rules:
+- For hand-only actions: remove the `OPTIONAL MATCH (c:Object ...)` line and all `FOREACH` blocks that reference `c`
+- For actions involving other objects: add their `OPTIONAL MATCH` and write `FOREACH` blocks
+- Never modify `batchSize: 1` or `iterateList: true` — these are what make each step commit independently
+
+> ▎ Never write `h.state` directly — the server owns it and overwrites it every frame.
+
+---
+
+### Pick/Place Step Reference
+
+| Step | Hand target | State write |
+|------|-------------|-------------|
+| Stage | `[obj.x − 0.35, obj.y, obj.z]`, orient `qy:0.707, qw:0.707` | SET obj.status = 'picking' |
+| Strike | `[obj.x − 0.185, obj.y, obj.z]` | — |
+| Lock | — | SET obj.status = 'grasped' |
+| Release | obj.location = [new pos], obj orientation reset to identity | SET obj.status = 'idle', back away ≥ 0.5m |
+
+> ▎ Renderer contract: `'grasped'` fuses object to hand frame — renderer derives object position from hand automatically. `'idle'` releases it. `'picking'` is semantic only.
+> ▎ All approach axes are X (side-grasp). Never approach any node via Z axis.
 
 ---
 
@@ -156,7 +235,7 @@ Object nodes are self-describing. Query the node first and infer the required in
 | Property pattern | Semantic meaning |
 |-----------------|-----------------|
 | `*_home` | Authoritative approach position for that operation — read from DB, never hardcode |
-| `*_time_seconds` | Required dwell time after `h.state = 'arrived'` |
+| `*_time_millis` | Required dwell time in milliseconds after `h.state = 'arrived'` — use directly as the sleep value |
 | `last_*` | Timestamp to set on completion of that operation |
 | `status` present | Requires status transitions per the flight plan |
 | `status` absent | Time-gated only — `h.state = 'arrived'` + dwell is the full completion signal |
@@ -200,7 +279,8 @@ Object nodes are self-describing. Query the node first and infer the required in
 - Query the digital twin for live node data before every operation — never assume positions
 - Verify all math against Rf and Ro before committing
 - Show pre-calc working before each Cypher transaction
-- Each phase is a separate transaction — never batch
+- All transforms execute as a single APOC UNWIND query using the fixed wrapper template in Section 3
+- Base sleep between steps is **1200ms**; for timed dwell operations add the node's `*_time_millis` value: `sleep: 1200 + node.dumping_time_millis`
 
 ---
 
