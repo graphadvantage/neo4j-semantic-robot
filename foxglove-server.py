@@ -83,6 +83,7 @@ async def main():
     curr_h_pos, curr_h_rot = None, None
     curr_f_prog = 0.0
     is_grasped = False
+    cup_local_rot = None
 
     def get_xyz(p):
         if hasattr(p, "x"): return [p.x, p.y, p.z]
@@ -114,7 +115,7 @@ async def main():
                     RETURN f.side AS side, f.local_offset_x AS ox, f.local_offset_z AS oz,
                            f.reference_fully_open AS ref_open, f.finger_tip_reach AS reach
                 """))
-                reach = (sum(f['reach'] for f in fingers if f['reach']) / len(fingers)) if fingers else 0.185
+                reach = (sum(f['reach'] for f in fingers if f['reach']) / len(fingers)) if fingers else 0.1675
                 
                 # --- HAND KINEMATICS ---
                 h_target_pos = np.array(get_xyz(hand["location"]))
@@ -135,8 +136,13 @@ async def main():
 
                 # --- GRASP STATE ---
                 arrived = np.linalg.norm(h_target_pos - curr_h_pos) <= GRASP_THRESHOLD
-                if status == "grasped" and not is_grasped and arrived: is_grasped = True
-                if status != "grasped": is_grasped = False
+                if status == "grasped" and not is_grasped and arrived:
+                    is_grasped = True
+                    cup_rot_at_grasp = R.from_quat([cup.get("qx", 0), cup.get("qy", 0), cup.get("qz", 0), cup.get("qw", 1)])
+                    cup_local_rot = curr_h_rot.inv() * cup_rot_at_grasp
+                if status != "grasped":
+                    is_grasped = False
+                    cup_local_rot = None
 
                 # --- HAND STATE WRITEBACK ---
                 session.run("MATCH (h:Hand {id: 'humanoid_hand'}) SET h.state = $s",
@@ -159,25 +165,27 @@ async def main():
                 # --- CUP RENDERING (MESH + BOUNDING BOX) ---
                 if cup:
                     if is_grasped:
-                        cup_world_rot = curr_h_rot * HAND_BASE_CALIB.inv()
+                        cup_world_rot = curr_h_rot * cup_local_rot
                         offset_vec = curr_h_rot.apply(np.array([0.0, 0.0, reach]))
-                        ref_pos = curr_h_pos + offset_vec
+                        grip_world = curr_h_rot.apply(np.array([0.0, cup.get("grip_y_offset", 0.0), 0.0]))
+                        ref_pos = curr_h_pos + offset_vec - grip_world
                     else:
                         cup_world_rot = R.from_quat([cup.get("qx", 0), cup.get("qy", 0), cup.get("qz", 0), cup.get("qw", 1)])
                         ref_pos = np.array(get_xyz(cup["location"]))
 
                     mesh_off = cup_world_rot.apply(np.array([0.0, 0.0, -hand.get("grip_z_offset", 0.06)]))
                     m_p, c_q = ref_pos + mesh_off, cup_world_rot.as_quat()
-                    
+                    cup_mesh_path = cup.get("mesh_path_empty") if cup.get("coffee_cup_level") == "empty" else cup.get("mesh_path")
+
                     entities.append(SceneEntity(
-                        id="coffee_cup", 
-                        frame_id="world", 
-                        timestamp=current_time, 
+                        id="coffee_cup",
+                        frame_id="world",
+                        timestamp=current_time,
                         models=[ModelPrimitive(
-                            pose=Pose(position=Vector3(x=m_p[0], y=m_p[1], z=m_p[2]), 
-                                      orientation=Quaternion(x=c_q[0], y=c_q[1], z=c_q[2], w=c_q[3])), 
-                            scale=Vector3(x=0.003, y=0.003, z=0.003), 
-                            url=resolve_mesh(cup.get("mesh_path"), DEFAULT_CUP_MESH)
+                            pose=Pose(position=Vector3(x=m_p[0], y=m_p[1], z=m_p[2]),
+                                      orientation=Quaternion(x=c_q[0], y=c_q[1], z=c_q[2], w=c_q[3])),
+                            scale=Vector3(x=0.003, y=0.003, z=0.003),
+                            url=resolve_mesh(cup_mesh_path, DEFAULT_CUP_MESH)
                         )],
                         cubes=[CubePrimitive(
                             size=Vector3(x=0.15, y=0.1, z=0.12), 
