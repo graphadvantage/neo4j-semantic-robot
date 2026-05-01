@@ -175,8 +175,8 @@ Add to `claude_desktop_config.json` (typically `~/Library/Application Support/Cl
       "args": [],
       "env": {
         "NEO4J_URI": "bolt://localhost:7687",
-        "NEO4J_USERNAME": "neo4j",
-        "NEO4J_PASSWORD": "your-password-here",
+        "NEO4J_USERNAME": "robot",
+        "NEO4J_PASSWORD": "your-robot-user-password",
         "NEO4J_DATABASE": "neo4j",
         "NEO4J_READ_ONLY": "false",
         "NEO4J_TELEMETRY": "false",
@@ -196,9 +196,41 @@ Add to `claude_desktop_config.json` (typically `~/Library/Application Support/Cl
 }
 ```
 
+The MCP connection runs as the `robot` database user — not the `neo4j` admin. See [Security — RBAC & the Robot User](#security--rbac--the-robot-user) below for how write permissions are ring-fenced.
+
 Create a Claude Desktop **Project**, paste in the contents of `claude-prompt.md` as the system prompt, and restart Claude.
 
 > **Voice Mode + ports:** When using Voice Mode with the OpenAI TTS backend (cloud), there is no port conflict — Voice Mode uses only the OpenAI API and does not open a local server. If you switch to a local TTS engine, check whether it binds port 8765 and resolve the conflict before starting `foxglove-server.py`.
+
+---
+
+### Security — RBAC & the Robot User
+
+An LLM agent with unrestricted database write access is a liability — it can overwrite calibration data, corrupt mesh paths, or modify static scene geometry through a misreasoned plan. This system uses Neo4j RBAC to ring-fence exactly what the agent is allowed to change.
+
+**The `robot` user has full read access and write access limited to:**
+
+| Node | Writable properties |
+|------|-------------------|
+| `Hand` | `location`, `qx`, `qy`, `qz`, `qw` |
+| `Target` (red cup) | `location`, `qx`, `qy`, `qz`, `qw`, `status`, `coffee_cup_level`, `last_fresh_brew` |
+
+**Explicitly protected from any write:**
+
+| Node / Property class | Protection |
+|----------------------|-----------|
+| `Hand.state` | Server-owned — overwritten every frame by `foxglove-server.py` |
+| `Hand.grip_z_offset`, `Hand.home` | Calibration — read-only |
+| `Finger.*` | Renderer-owned — agent never writes finger state |
+| `Static` nodes (coffee maker, countertop, etc.) | `DENY SET PROPERTY {*}` — blocked at the database level regardless of any future grants |
+| `Object.grip_y_offset`, `Object.*_home`, `Object.*_time_millis` | Calibration — read-only |
+| `Object.mesh_path`, `Object.mesh_path_empty`, `Object.radius` | Scene config — read-only |
+
+The `Target` and `Static` labels provide instance-level write isolation within the `Object` label family — the agent can transition the cup's state but cannot touch the coffee maker or countertop nodes.
+
+**Setup** *(requires Neo4j Enterprise Edition):*
+
+Run `setup-robot-user.cyp` sequentially in Neo4j Browser or `cypher-shell`. Set your password in the file before running, then use the same password for `NEO4J_PASSWORD` in `claude_desktop_config.json`.
 
 ### Run
 
