@@ -170,7 +170,8 @@ async def main():
                         grip_world = curr_h_rot.apply(np.array([0.0, cup.get("grip_y_offset", 0.0), 0.0]))
                         ref_pos = curr_h_pos + offset_vec - grip_world
                     else:
-                        cup_world_rot = R.from_quat([cup.get("qx", 0), cup.get("qy", 0), cup.get("qz", 0), cup.get("qw", 1)])
+                        _qh = cup.get("quat_home") or [0.0, 0.0, -0.707, 0.707]
+                        cup_world_rot = R.from_quat([cup.get("qx", _qh[0]), cup.get("qy", _qh[1]), cup.get("qz", _qh[2]), cup.get("qw", _qh[3])])
                         ref_pos = np.array(get_xyz(cup["location"]))
 
                     mesh_off = cup_world_rot.apply(np.array([0.0, 0.0, -hand.get("grip_z_offset", 0.06)]))
